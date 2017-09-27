@@ -16,7 +16,7 @@ lapply(packages, require, character.only=TRUE)
 devtools::load_all('taskpackage')
 
 # Zip file location
-file_location <- 'iconicdatascientist/test_data.zip'
+file_location <- 'datascientist/test_data.zip'
 
 # Keyword that needs to be hashed
 keyword <- 'welcometotheiconic'
