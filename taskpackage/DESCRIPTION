@@ -1,0 +1,14 @@
+Package: taskpackage
+Title: taskpackage
+Version: 0.0.0.9000
+Authors@R: person("Sahil", "Patel", email = "email@example.com", role = c("aut", "cre"))
+Description: Useful ml functions
+Depends: R (>= 3.4.0)
+License: What license is it under?
+Encoding: UTF-8
+LazyData: true
+Imports:
+  digest,
+  Hmisc,
+  jsonlite,
+RoxygenNote: 6.0.1

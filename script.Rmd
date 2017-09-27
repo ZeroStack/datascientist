@@ -1,0 +1,1611 @@
+---
+title: 'The Iconic: Data Scientist Task'
+author: 'Sahil Patel'
+output:
+  html_document:
+    number_sections: true
+    toc: true
+    fig_height: 4
+    fig_width: 7
+    theme: cosmo
+    highlight: tango
+---
+
+```{r setup, include=FALSE}
+# Enable caching globally for a document for quicker rerunning
+#knitr::opts_chunk$set(cache=TRUE)
+```
+
+# Introduction
+
+Welcome! Here is my first iteration of the The Iconic Data Scientist Task which houses the process, findings, and code of the analysis (although, there is also a custom package which is loaded here called 'taskpackage'). 
+
+A zip file was provided with the keyword 'welcometotheiconic'; using this the data was accessed by hashing the keyword with an unserialized SHA-256 hash function.
+
+**The primary focus of this task is to infer a customer's gender based on behavioural data.**
+
+There are 5 aspects to this script as follows:
+
+* Exploratory data analysis: a shallow dive into the data and realizing what we have to work with.
+* Feature engineering: creating additional columns with useful information from the existing dataset and any adjustments. It has been mentioned that two columns have been intentionally corrupted.
+* Labelling data: the data is currently unlabelled with no gender flag, a reliable mechanism to transverse the data to labelled data is a requirement to train a model to infer the gender. Human judgement is manual and not scalable so this is not an option. 
+* Model building: with labelled data build a deep learning model that can predict gender.
+* Model results: any useful wisdom obtained from the model results.
+* Five potential features: recommendation of top 5 features apart from the ones provided.
+* Executive summary
+
+# The Problem
+
+A dataset is provided which has information on customer behaviour, there is no flag as to whether the customer is male or female. In this way the data is said to be **unlabelled**.
+
+Inferring the customer's gender is a **supervised classification machine learning problem**, however, in order to begin any process of model building the data must be labelled to train a model. A preliminary requirement is to label the data.
+
+In order to label the data, a useful starting point might be to use the data available and observe how do the customers conform to different groups or segments. This approach is **unsupervised learning**. Formally, unsupervised learning is inferring a function to describe hidden structure from "unlabeled" data which is appropriate here.
+
+With this, we can associate these segments to either male or female and then proceed to building a classification model.
+
+# Exploratory data analysis
+
+## Read in the data
+```{r, message=FALSE, warning=FALSE, results='hide'}
+# List of packages to load
+## Packages for data wrangling 
+wrangling.packages <- c('taskpackage', 'DT', 'dplyr', 'tidyr', 'stringr', 'reshape2', 'data.table')
+
+### Plotting libraries
+plotting.packages <- c('ggplot2', 'ggthemes', 'RColorBrewer', 'gplots')
+
+#### Machine learning related packages
+ml.packages <- c('factoextra', 'clustertend', 'h2o', 'caret')
+
+# Load packages
+lapply(c(wrangling.packages, plotting.packages, ml.packages), require, character.only = TRUE)
+
+# Load data into the environment
+customers <- taskpackage::open_file(file_location, keyword = keyword, hashing_function = 'sha256', serialize=FALSE)
+
+```
+
+With the data loaded and unencrypted, let us take a closer look:
+
+## Glance at the dataset {.tabset}
+
+### Data
+
+There is a total of 42 (43 columns including customer id) features per customer. 46,279 rows of data where there are 46,030 unique customers.
+
+41 of the features are numerical and 1 is categorical.
+
+```{r, result='asis', echo=FALSE}
+DT::datatable(head(customers,100), style='bootstrap', class='table-condensed', options = list(dom = 'tp',scrollX = TRUE))
+```
+
+### Summary
+
+Summary of each column.
+
+```{r, result='asis', echo=FALSE}
+DT::datatable(data.frame(unclass(summary(customers)), check.names = FALSE, stringsAsFactors = FALSE), style='bootstrap', class='table-condensed', options = list(dom = 'tp',scrollX = TRUE))
+```
+
+### Duplicate data
+
+Customer ids which have more than 1 occurrence in the dataset; there are 249 customer ids that are repeated at least once. Upon further inspection, rows with these customer ids are also row duplicates.
+
+If you arrange by customer_id in the table below you will be able to view the duplicates with ease (this has been done by default).
+
+```{r, result='asis', echo=FALSE}
+DT::datatable(customers %>%
+    dplyr::filter(customer_id %in% unique(.[['customer_id']][duplicated(.[['customer_id']])])) %>%
+    dplyr::arrange(customer_id),    style='bootstrap', class='table-condensed', options = list(dom = 'tp',scrollX = TRUE)
+    )
+```
+
+## Remove duplicated rows
+
+With this, we can simply remove these duplicate rows as they add no further information, this will be performed here so it does not impact any further analysis.
+
+```{r, message=FALSE, warning=FALSE}
+customers <- customers[!duplicated(customers),]
+```
+
+The data should now have 46,030 rows
+```{r, message=FALSE, warning=FALSE}
+nrow(customers)
+```
+
+## How frequent are customers? {.tabset}
+
+### Days since first order
+
+As shown in the figure below, the distribution of what can be interpreted as customer tenure is shown in days. 
+
+Interestingly, the oldest order was 2164 days ago, or approximately 5.9 years ago. Subtracting that from this year (2017) we arrive at 2011.1 which happens to be the year The Iconic launched; potentially one of the first customers (since this is a sample).
+
+Moreover, a large portion of the customers in this sample had their first order 1,500-2,000 days ago.
+A majority of customers were early adopters.
+
+```{r}
+customers %>%  
+  ggplot2::ggplot(aes(x=days_since_first_order)) + 
+  ggplot2::geom_histogram(bins=400, fill='#2780e3') + 
+  ggthemes::theme_few() + 
+  ggplot2::labs(y = '# of Customers', x = 'Days since the first order was made')
+```
+
+### Days since last order **#corrupted**
+
+Comparatively, the data visualized below is supposed to show the days since the last order or how **recent** the customer was, however, the range of values lies within 24 to 51,840 when days since first order has a range of 1 to 2,164. 
+
+Intuitively, a customer will always have a first order that was older than the last order. Hence, this is one of the 1/2 intentionally corrupted columns.
+
+A logical approach to remedy this column will be elaborated on further in this script, however, it becomes clear where the issue lies when one considers the ranges should have the same starting value of 1 day (since both columns are supposed to be in days).
+
+```{r}
+customers %>%  
+  ggplot2::ggplot(aes(x=days_since_last_order)) + 
+  ggplot2::geom_histogram(bins=400, fill='#2780e3') + 
+  ggthemes::theme_few() + 
+  ggplot2::labs(y = '# of Customers', x = 'Days since the last order was made')
+```
+
+## Newsletter subscribers
+
+The 46,030 customers are split between 40.9% who are subscribers of the newsletter and the remaining 59.1% are not.
+
+```{r, warning=FALSE}
+customers %>% 
+  dplyr::group_by(is_newsletter_subscriber) %>%
+  dplyr::summarise(count = n()) %>%
+  ggplot2::ggplot(aes(x = is_newsletter_subscriber, y=count, fill=is_newsletter_subscriber)) +
+  ggplot2::geom_bar(stat = "identity", position = "identity") +
+  ggplot2::geom_text(aes(label = paste0(sprintf("%0.1f", round(count/sum(count)*100,1)),'%'), vjust = -0.10)) +
+  ggthemes::theme_few() + 
+  ggplot2::labs(y = '# of Customers', x = 'Flag for a newsletter subscriber') +
+  ggplot2::theme(legend.position='none')
+```
+
+## Order history {.tabset}
+
+### Orders
+
+The figure below shows the total customers who fall within a certain range of orders, as observed, the majority of customers order more than once which accounts for 53.8% of the customers in this sample. 
+
+We can infer that this majority of customers are happy with their first order and return to shop with The Iconic.
+
+```{r}
+customers %>% 
+  dplyr::mutate(orders_cut = cut(orders, 
+                                 breaks = c(seq(0,10), 750),
+                                 labels = c(seq(1,10), '11+'))) %>% 
+  dplyr::group_by(orders_cut) %>%
+  dplyr::summarise(count = n()) %>%
+  ggplot2::ggplot(aes(x = orders_cut, y = count)) + 
+  ggplot2::geom_bar(stat = "identity", position = "identity", fill='#2780e3') +
+  ggplot2::geom_text(aes(label = paste0(sprintf("%0.1f", round(count/sum(count)*100,1)),'%'), vjust = -0.10)) +
+  ggthemes::theme_few() + 
+  ggplot2::labs(y = '# of Customers', x = 'Number of orders') + 
+  ggplot2::theme(legend.position='none')
+```
+
+### Items
+
+Similar to total orders, the majority of customers ordered more than 1 item; 69.3% of customers performed this behaviour.
+
+```{r}
+customers %>% 
+  dplyr::mutate(items_cut = cut(items, 
+                                breaks = c(seq(0,10), 750),
+                                labels = c(seq(1,10), '11+'))) %>% 
+  dplyr::group_by(items_cut) %>%
+  dplyr::summarise(count = n()) %>%
+  ggplot2::ggplot(aes(x = items_cut, y = count)) + 
+  ggplot2::geom_bar(stat = "identity", position = "identity", fill='#2780e3') +
+  ggplot2::geom_text(aes(label = paste0(sprintf("%0.1f", round(count/sum(count)*100,1)),'%'), vjust = -0.10)) +
+  ggthemes::theme_few() + 
+  ggplot2::labs(y = '# of Customers', x = 'Number of items') + 
+  ggplot2::theme(legend.position='none')
+```
+
+### Cancels
+
+96.5% of customers do not cancel their order.
+
+```{r}
+customers %>% 
+  dplyr::mutate(cancels_cut = cut(cancels, 
+                                  breaks = c(seq(-1,10), 750),
+                                  labels = c(seq(0,10), '11+'))) %>%
+  dplyr::group_by(cancels_cut) %>%
+  dplyr::summarise(count = n()) %>%
+  ggplot2::ggplot(aes(x = cancels_cut, y = count)) + 
+  ggplot2::geom_bar(stat = "identity", position = "identity", fill='#2780e3') +
+  ggplot2::geom_text(aes(label = paste0(sprintf("%0.1f", round(count/sum(count)*100,1)),'%'), vjust = -0.10)) +
+  ggthemes::theme_few() + 
+  ggplot2::labs(y = '# of Customers', x = 'Number of cancellations') + 
+  ggplot2::theme(legend.position='none')
+```
+
+### Returns
+
+The majority of customers are satisfied with their order where only only 31.8% return.
+
+```{r}
+customers %>% 
+  dplyr::mutate(returns_cut = cut(returns, 
+                                  breaks = c(seq(-1,10), 750),
+                                  labels = c(seq(0,10), '11+'))) %>%
+  dplyr::group_by(returns_cut) %>%
+  dplyr::summarise(count = n()) %>%
+  ggplot2::ggplot(aes(x = returns_cut, y = count)) + 
+  ggplot2::geom_bar(stat = "identity", position = "identity", fill='#2780e3') +
+  ggplot2::geom_text(aes(label = paste0(sprintf("%0.1f", round(count/sum(count)*100,1)),'%'), vjust = -0.10)) +
+  ggthemes::theme_few() + 
+  ggplot2::labs(y = '# of Customers', x = 'Number of returned orders') + 
+  ggplot2::theme(legend.position='none')
+```
+
+## Address history {.tabset}
+
+### Different addresses
+
+88.4% of customers have the same delivery and billing address.
+
+```{r}
+customers %>% 
+  dplyr::group_by(different_addresses) %>%
+  dplyr::summarise(count = n()) %>%
+  ggplot2::ggplot(aes(x = as.factor(different_addresses), y = count, fill = factor(different_addresses))) + 
+  ggplot2::geom_bar(stat = "identity", position = "identity") +
+  ggplot2::geom_text(aes(label = paste0(sprintf("%0.1f", round(count/sum(count)*100,1)),'%'), vjust = -0.10)) +
+  ggthemes::theme_few() + 
+  ggplot2::labs(y = '# of Customers', x = 'Number of times a different billing and shipping address was used') + 
+  ggplot2::theme(legend.position='none')
+```
+
+### Shipping addresses
+
+27.2% of customers have more than 1 shipping address in their history.
+
+```{r}
+customers %>% 
+  dplyr::group_by(shipping_addresses) %>%
+  dplyr::summarise(count = n()) %>%
+  ggplot2::ggplot(aes(x = shipping_addresses, y = count, shipping_addresses)) + 
+  ggplot2::geom_bar(stat = "identity", position = "identity", fill='#2780e3') +
+  ggplot2::geom_text(aes(label = paste0(sprintf("%0.1f", round(count/sum(count)*100,1)),'%'), vjust = -0.10)) +
+  ggthemes::theme_few() + 
+  ggplot2::labs(y = '# of Customers', x = 'Number of different shipping addresses used') + 
+  ggplot2::theme(legend.position='none')
+```
+
+## How many devices do customers have?
+
+The majority of customers only use 1 device when shopping with The Iconic: 76.4%, and a small minority of 4.2% have shopped with 3 devices.
+
+```{r}
+customers %>% 
+  dplyr::group_by(devices) %>%
+  dplyr::summarise(count = n()) %>%
+  ggplot2::ggplot(aes(x = as.factor(devices), y = count, fill = factor(devices))) + 
+  ggplot2::geom_bar(stat = "identity", position = "identity") +
+  ggplot2::geom_text(aes(label = paste0(sprintf("%0.1f", round(count/sum(count)*100,1)),'%'), vjust = -0.10)) +
+  ggthemes::theme_few() + 
+  ggplot2::labs(y = '# of Customers', x = 'Number of unique devices used') + 
+  ggplot2::theme(legend.position='none')
+```
+
+## How many vouchers have customers applied?
+
+Surprisingly, 63.2% of customers have not applied any vouchers when purchasing.
+
+```{r}
+customers %>% 
+  dplyr::mutate(vouchers_cut = cut(vouchers, 
+                                   breaks = c(seq(-1,10), 750),
+                                   labels = c(seq(0,10), '11+'))) %>%
+  dplyr::group_by(vouchers_cut) %>%
+  dplyr::summarise(count = n()) %>%
+  ggplot2::ggplot(aes(x = vouchers_cut, y = count)) + 
+  ggplot2::geom_bar(stat = "identity", position = "identity",  fill='#2780e3') +
+  ggplot2::geom_text(aes(label = paste0(sprintf("%0.1f", round(count/sum(count)*100,1)),'%'), vjust = -0.10)) +
+  ggthemes::theme_few() + 
+  ggplot2::labs(y = '# of Customers', x = 'Number of times a voucher was applied') + 
+  ggplot2::theme(legend.position='none')
+```
+
+## How are customers paying for orders? {.tabset}
+
+### Credit card payments
+
+64.3% of customers have a credit card registered with their account.
+
+```{r}
+customers %>% 
+  dplyr::group_by(cc_payments) %>%
+  dplyr::summarise(count = n()) %>%
+  ggplot2::ggplot(aes(x = as.factor(cc_payments), y = count, fill = factor(cc_payments))) + 
+  ggplot2::geom_bar(stat = "identity", position = "identity") +
+  ggplot2::geom_text(aes(label = paste0(sprintf("%0.1f", round(count/sum(count)*100,1)),'%'), vjust = -0.10)) +
+  ggthemes::theme_few() + 
+  ggplot2::labs(y = '# of Customers', x = 'Credit card was used for payment') + 
+  ggplot2::theme(legend.position='none')
+```
+
+### Paypal payments
+
+A lesser 49.0% of customers have a PayPal account registered.
+
+```{r}
+customers %>% 
+  dplyr::group_by(paypal_payments) %>%
+  dplyr::summarise(count = n()) %>%
+  ggplot2::ggplot(aes(x = as.factor(paypal_payments), y = count, fill = factor(paypal_payments))) + 
+  ggplot2::geom_bar(stat = "identity", position = "identity") +
+  ggplot2::geom_text(aes(label = paste0(sprintf("%0.1f", round(count/sum(count)*100,1)),'%'), vjust = -0.10)) +
+  ggthemes::theme_few() + 
+  ggplot2::labs(y = '# of Customers', x = 'PayPal was used for payment') + 
+  ggplot2::theme(legend.position='none')
+```
+
+### AfterPay payments
+
+AfterPay is the second least popular payment method with only 5.4% of customers.
+
+```{r}
+customers %>% 
+  dplyr::group_by(afterpay_payments) %>%
+  dplyr::summarise(count = n()) %>%
+  ggplot2::ggplot(aes(x = as.factor(afterpay_payments), y = count, fill = factor(afterpay_payments))) + 
+  ggplot2::geom_bar(stat = "identity", position = "identity") +
+  ggplot2::geom_text(aes(label = paste0(sprintf("%0.1f", round(count/sum(count)*100,1)),'%'), vjust = -0.10)) +
+  ggthemes::theme_few() + 
+  ggplot2::labs(y = '# of Customers', x = 'AfterPay was used for payment') + 
+  ggplot2::theme(legend.position='none')
+```
+
+### Apple payments
+
+Apple pay is the least popular medium of payment processing with only 0.1% of customers.
+
+```{r}
+customers %>% 
+  dplyr::group_by(apple_payments) %>%
+  dplyr::summarise(count = n()) %>%
+  ggplot2::ggplot(aes(x = as.factor(apple_payments), y = count, fill = factor(apple_payments))) + 
+  ggplot2::geom_bar(stat = "identity", position = "identity") +
+  ggplot2::geom_text(aes(label = paste0(sprintf("%0.1f", round(count/sum(count)*100,1)),'%'), vjust = -0.10)) +
+  ggthemes::theme_few() + 
+  ggplot2::labs(y = '# of Customers', x = 'Apple Pay was used for payment') + 
+  ggplot2::theme(legend.position='none')
+```
+
+## Broad gender specificity of items {.tabset}
+
+### Female items
+
+74.6% of customers have ordered at least 1 female item. This column will be paramount when inferring gender further in the script.
+
+```{r}
+customers %>% 
+  dplyr::mutate(female_items_cut = cut(female_items, 
+                                       breaks = c(seq(-1,10), 750),
+                                       labels = c(seq(0,10), '11+'))) %>%
+  dplyr::group_by(female_items_cut) %>%
+  dplyr::summarise(count = n()) %>%
+  ggplot2::ggplot(aes(x = female_items_cut, y = count)) + 
+  ggplot2::geom_bar(stat = "identity", position = "identity",  fill='#2780e3') +
+  ggplot2::geom_text(aes(label = paste0(sprintf("%0.1f", round(count/sum(count)*100,1)),'%'), vjust = -0.10)) +
+  ggthemes::theme_few() + 
+  ggplot2::labs(y = '# of Customers', x = 'Number of female items purchased') + 
+  ggplot2::theme(legend.position='none')
+```
+
+### Male items
+
+37.2% of customers have ordered at least 1 male item. This column will be paramount when inferring gender further in the script.
+
+```{r}
+customers %>% 
+  dplyr::mutate(male_items_cut = cut(male_items, 
+                                     breaks = c(seq(-1,10), 750),
+                                     labels = c(seq(0,10), '11+'))) %>%
+  dplyr::group_by(male_items_cut) %>%
+  dplyr::summarise(count = n()) %>%
+  ggplot2::ggplot(aes(x = male_items_cut, y = count)) + 
+  ggplot2::geom_bar(stat = "identity", position = "identity", fill='#2780e3') +
+  ggplot2::geom_text(aes(label = paste0(sprintf("%0.1f", round(count/sum(count)*100,1)),'%'), vjust = -0.10)) +
+  ggthemes::theme_few() + 
+  ggplot2::labs(y = '# of Customers', x = 'Number of male items purchased') + 
+  ggplot2::theme(legend.position='none')
+```
+
+### Unisex items
+
+21.1% of customers have ordered at least 1 unisex item. 
+
+```{r}
+customers %>% 
+  dplyr::mutate(unisex_items_cut = cut(unisex_items, 
+                                       breaks = c(seq(-1,10), 750),
+                                       labels = c(seq(0,10), '11+'))) %>%
+  dplyr::group_by(unisex_items_cut) %>%
+  dplyr::summarise(count = n()) %>%
+  ggplot2::ggplot(aes(x = unisex_items_cut, y = count)) + 
+  ggplot2::geom_bar(stat = "identity", position = "identity", fill='#2780e3') +
+  ggplot2::geom_text(aes(label = paste0(sprintf("%0.1f", round(count/sum(count)*100,1)),'%'), vjust = -0.10)) +
+  ggthemes::theme_few() + 
+  ggplot2::labs(y = '# of Customers', x = 'Number of unisex items purchased') + 
+  ggplot2::theme(legend.position='none')
+```
+
+## Detail item specificity {.tabset}
+
+### Women apparel items
+
+44.7% of customers order at least 1 women apparel item.
+
+```{r}
+customers %>% 
+  dplyr::mutate(wapp_items_cut = cut(wapp_items, 
+                                     breaks = c(seq(-1,10), 750),
+                                     labels = c(seq(0,10), '11+'))) %>%
+  dplyr::group_by(wapp_items_cut) %>%
+  dplyr::summarise(count = n()) %>%
+  ggplot2::ggplot(aes(x = wapp_items_cut, y = count, fill = wapp_items_cut)) + 
+  ggplot2::geom_bar(stat = "identity", position = "identity", fill='#2780e3') +
+  ggplot2::geom_text(aes(label = paste0(sprintf("%0.1f", round(count/sum(count)*100,1)),'%'), vjust = -0.10)) +
+  ggthemes::theme_few() + 
+  ggplot2::labs(y = '# of Customers', x = 'Number of Women Apparel items purchased') + 
+  ggplot2::theme(legend.position='none')
+```
+
+### Women footwear items
+
+46.1% of customers order at least 1 women footwear item. The most popular category.
+
+```{r}
+customers %>% 
+  dplyr::mutate(wftw_items_cut = cut(wftw_items,
+                                     breaks = c(seq(-1,10), 750),
+                                     labels = c(seq(0,10), '11+'))) %>%
+  dplyr::group_by(wftw_items_cut) %>%
+  dplyr::summarise(count = n()) %>%
+  ggplot2::ggplot(aes(x = wftw_items_cut, y = count, fill = wftw_items_cut)) + 
+  ggplot2::geom_bar(stat = "identity", position = "identity", fill='#2780e3') +
+  ggplot2::geom_text(aes(label = paste0(sprintf("%0.1f", round(count/sum(count)*100,1)),'%'), vjust = -0.10)) +
+  ggthemes::theme_few() + 
+  ggplot2::labs(y = '# of Customers', x = 'Number of Women Footwear items purchased') + 
+  ggplot2::theme(legend.position='none')
+```
+
+### Men apparel items
+
+20.2% of customers order at least 1 men apparel item.
+
+```{r}
+customers %>% 
+  dplyr::mutate(mapp_items_cut = cut(mapp_items, 
+                                     breaks = c(seq(-1,10), 750),
+                                     labels = c(seq(0,10), '11+'))) %>%
+  dplyr::group_by(mapp_items_cut) %>%
+  dplyr::summarise(count = n()) %>%
+  ggplot2::ggplot(aes(x = mapp_items_cut, y = count, fill = mapp_items_cut)) + 
+  ggplot2::geom_bar(stat = "identity", position = "identity", fill='#2780e3') +
+  ggplot2::geom_text(aes(label = paste0(sprintf("%0.1f", round(count/sum(count)*100,1)),'%'), vjust = -0.10)) +
+  ggthemes::theme_few() + 
+  ggplot2::labs(y = '# of Customers', x = 'Number of Men Apparel items purchased') + 
+  ggplot2::theme(legend.position='none')
+```
+
+### Women accessories items
+
+22.2% of customers order at least 1 women accessory item.
+
+```{r}
+customers %>% 
+  dplyr::mutate(wacc_items_cut = cut(wacc_items, 
+                                     breaks = c(seq(-1,10), 750),
+                                     labels = c(seq(0,10), '11+'))) %>%
+  dplyr::group_by(wacc_items_cut) %>%
+  dplyr::summarise(count = n()) %>%
+  ggplot2::ggplot(aes(x = wacc_items_cut, y = count, fill = wacc_items_cut)) + 
+  ggplot2::geom_bar(stat = "identity", position = "identity", fill='#2780e3') +
+  ggplot2::geom_text(aes(label = paste0(sprintf("%0.1f", round(count/sum(count)*100,1)),'%'), vjust = -0.10)) +
+  ggthemes::theme_few() + 
+  ggplot2::labs(y = '# of Customers', x = 'Number of Women Accessories items purchased') + 
+  ggplot2::theme(legend.position='none')
+```
+
+### Men accessories items
+
+20.2% of customers order at least 1 men accessory item.
+
+```{r}
+customers %>% 
+  dplyr::mutate(mapp_items_cut = cut(mapp_items, 
+                                     breaks = c(seq(-1,10), 750),
+                                     labels = c(seq(0,10), '11+'))) %>%
+  dplyr::group_by(mapp_items_cut) %>%
+  dplyr::summarise(count = n()) %>%
+  ggplot2::ggplot(aes(x = mapp_items_cut, y = count, fill = mapp_items_cut)) + 
+  ggplot2::geom_bar(stat = "identity", position = "identity", fill='#2780e3') +
+  ggplot2::geom_text(aes(label = paste0(sprintf("%0.1f", round(count/sum(count)*100,1)),'%'), vjust = -0.10)) +
+  ggthemes::theme_few() + 
+  ggplot2::labs(y = '# of Customers', x = 'Number of Men Accessories items purchased') + 
+  ggplot2::theme(legend.position='none')
+```
+
+### Men footwear items
+
+18.8% of customers order at least 1 men footwear item.
+
+```{r}
+customers %>% 
+  dplyr::mutate(mftw_items_cut = cut(mftw_items, 
+                                     breaks = c(seq(-1,10), 750),
+                                     labels = c(seq(0,10), '11+'))) %>%
+  dplyr::group_by(mftw_items_cut) %>%
+  dplyr::summarise(count = n()) %>%
+  ggplot2::ggplot(aes(x = mftw_items_cut, y = count, fill = mftw_items_cut)) + 
+  ggplot2::geom_bar(stat = "identity", position = "identity", fill='#2780e3') +
+  ggplot2::geom_text(aes(label = paste0(sprintf("%0.1f", round(count/sum(count)*100,1)),'%'), vjust = -0.10)) +
+  ggthemes::theme_few() + 
+  ggplot2::labs(y = '# of Customers', x = 'Number of Men Footwear items purchased') + 
+  ggplot2::theme(legend.position='none')
+```
+
+### Women sports items
+
+12.6% of customers order at least 1 women sport item.
+
+```{r}
+customers %>% 
+  dplyr::mutate(wspt_items_cut = cut(wspt_items, 
+                                     breaks = c(seq(-1,10), 750),
+                                     labels = c(seq(0,10), '11+'))) %>%
+  dplyr::group_by(wspt_items_cut) %>%
+  dplyr::summarise(count = n()) %>%
+  ggplot2::ggplot(aes(x = wspt_items_cut, y = count, fill = wspt_items_cut)) + 
+  ggplot2::geom_bar(stat = "identity", position = "identity", fill='#2780e3') +
+  ggplot2::geom_text(aes(label = paste0(sprintf("%0.1f", round(count/sum(count)*100,1)),'%'), vjust = -0.10)) +
+  ggthemes::theme_few() + 
+  ggplot2::labs(y = '# of Customers', x = 'Number of Women Sport items purchased') + 
+  ggplot2::theme(legend.position='none')
+```
+
+### Men sports items
+
+5.7% of customers order at least 1 men sports item.
+
+```{r}
+customers %>% 
+  dplyr::mutate(mspt_items_cut = cut(mspt_items, 
+                                     breaks = c(seq(-1,10), 750),
+                                     labels = c(seq(0,10), '11+'))) %>%
+  dplyr::group_by(mspt_items_cut) %>%
+  dplyr::summarise(count = n()) %>%
+  ggplot2::ggplot(aes(x = mspt_items_cut, y = count, fill = mspt_items_cut)) + 
+  ggplot2::geom_bar(stat = "identity", position = "identity", fill='#2780e3') +
+  ggplot2::geom_text(aes(label = paste0(sprintf("%0.1f", round(count/sum(count)*100,1)),'%'), vjust = -0.10)) +
+  ggthemes::theme_few() + 
+  ggplot2::labs(y = '# of Customers', x = 'Number of Men Sport items purchased') + 
+  ggplot2::theme(legend.position='none')
+```
+
+### Curvy items
+
+1.4% of customers order at least 1 curvy item; the least shopped category.
+
+```{r}
+customers %>% 
+  dplyr::mutate(curvy_items_cut = cut(curvy_items, 
+                                      breaks = c(seq(-1,10), 750),
+                                      labels = c(seq(0,10), '11+'))) %>%
+  dplyr::group_by(curvy_items_cut) %>%
+  dplyr::summarise(count = n()) %>%
+  ggplot2::ggplot(aes(x = curvy_items_cut, y = count, fill = curvy_items_cut)) + 
+  ggplot2::geom_bar(stat = "identity", position = "identity", fill='#2780e3') +
+  ggplot2::geom_text(aes(label = paste0(sprintf("%0.1f", round(count/sum(count)*100,1)),'%'), vjust = -0.10)) +
+  ggthemes::theme_few() + 
+  ggplot2::labs(y = '# of Customers', x = 'Number of Curvy items purchased') + 
+  ggplot2::theme(legend.position='none')
+```
+
+### Sports accessories items 
+
+5.3% of customers order at least 1 sports accessory item.
+
+
+```{r}
+customers %>% 
+  dplyr::mutate(sacc_items_cut = cut(sacc_items, 
+                                     breaks = c(seq(-1,10), 750),
+                                     labels = c(seq(0,10), '11+'))) %>%
+  dplyr::group_by(sacc_items_cut) %>%
+  dplyr::summarise(count = n()) %>%
+  ggplot2::ggplot(aes(x = sacc_items_cut, y = count, fill = sacc_items_cut)) + 
+  ggplot2::geom_bar(stat = "identity", position = "identity", fill='#2780e3') +
+  ggplot2::geom_text(aes(label = paste0(sprintf("%0.1f", round(count/sum(count)*100,1)),'%'), vjust = -0.10)) +
+  ggthemes::theme_few() + 
+  ggplot2::labs(y = '# of Customers', x = 'Number of Sport Accessories items purchased') + 
+  ggplot2::theme(legend.position='none')
+```
+
+## Device type of orders {.tabset}
+
+### Mobile site orders
+
+37.4% of customers ordered on the mobile site, the second highest medium for shopping with The Iconic.
+
+```{r}
+customers %>% 
+  dplyr::mutate(msite_orders_cut = cut(msite_orders, 
+                                       breaks = c(seq(-1,10), 750),
+                                       labels = c(seq(0,10), '11+'))) %>%
+  dplyr::group_by(msite_orders_cut) %>%
+  dplyr::summarise(count = n()) %>%
+  ggplot2::ggplot(aes(x = msite_orders_cut, y = count)) + 
+  ggplot2::geom_bar(stat = "identity", position = "identity", fill='#2780e3') +
+  ggplot2::geom_text(aes(label = paste0(sprintf("%0.1f", round(count/sum(count)*100,1)),'%'), vjust = -0.10)) +
+  ggthemes::theme_few() + 
+  ggplot2::labs(y = '# of Customers', x = 'Number of Mobile Site orders') + 
+  ggplot2::theme(legend.position='none')
+```
+
+### Desktop orders
+
+78.9% of customers use their desktops to shop; the highest medium.
+
+```{r}
+customers %>% 
+  dplyr::mutate(desktop_orders_cut = cut(desktop_orders, 
+                                         breaks = c(seq(-1,10), 750),
+                                         labels = c(seq(0,10), '11+'))) %>%
+  dplyr::group_by(desktop_orders_cut) %>%
+  dplyr::summarise(count = n()) %>%
+  ggplot2::ggplot(aes(x = desktop_orders_cut, y = count)) + 
+  ggplot2::geom_bar(stat = "identity", position = "identity", fill='#2780e3') +
+  ggplot2::geom_text(aes(label = paste0(sprintf("%0.1f", round(count/sum(count)*100,1)),'%'), vjust = -0.10)) +
+  ggthemes::theme_few() + 
+  ggplot2::labs(y = '# of Customers', x = 'Number of Desktop orders') + 
+  ggplot2::theme(legend.position='none')
+```
+
+### Android app orders
+
+1.6% of customers use the Android app.
+
+```{r}
+customers %>% 
+  dplyr::mutate(android_orders_cut = cut(android_orders, 
+                                         breaks = c(seq(-1,10), 750),
+                                         labels = c(seq(0,10), '11+'))) %>%
+  dplyr::group_by(android_orders_cut) %>%
+  dplyr::summarise(count = n()) %>%
+  ggplot2::ggplot(aes(x = android_orders_cut, y = count)) + 
+  ggplot2::geom_bar(stat = "identity", position = "identity", fill='#2780e3') +
+  ggplot2::geom_text(aes(label = paste0(sprintf("%0.1f", round(count/sum(count)*100,1)),'%'), vjust = -0.10)) +
+  ggthemes::theme_few() + 
+  ggplot2::labs(y = '# of Customers', x = 'Number of Android app orders') + 
+  ggplot2::theme(legend.position='none')
+```
+
+### IOS app orders
+
+10.8% of customers use the IOS app, significantly more popular than the Android app by a multiple of 6.75.
+
+```{r}
+customers %>% 
+  dplyr::mutate(ios_orders_cut = cut(ios_orders, 
+                                     breaks = c(seq(-1,10), 750),
+                                     labels = c(seq(0,10), '11+'))) %>%
+  dplyr::group_by(ios_orders_cut) %>%
+  dplyr::summarise(count = n()) %>%
+  ggplot2::ggplot(aes(x = ios_orders_cut, y = count)) + 
+  ggplot2::geom_bar(stat = "identity", position = "identity", fill='#2780e3') +
+  ggplot2::geom_text(aes(label = paste0(sprintf("%0.1f", round(count/sum(count)*100,1)),'%'), vjust = -0.10)) +
+  ggthemes::theme_few() + 
+  ggplot2::labs(y = '# of Customers', x = 'Number of iOS app orders') + 
+  ggplot2::theme(legend.position='none')
+```
+
+### Other devices orders
+
+There is a rounding error in the graph below as there is only 1 customer who falls into this category.
+
+```{r}
+customers %>% 
+  dplyr::mutate(other_device_orders_cut = cut(other_device_orders, 
+                                              breaks = c(seq(-1,10), 750),
+                                              labels = c(seq(0,10), '11+'))) %>%
+  dplyr::group_by(other_device_orders_cut) %>%
+  dplyr::summarise(count = n()) %>%
+  ggplot2::ggplot(aes(x = other_device_orders_cut, y = count)) + 
+  ggplot2::geom_bar(stat = "identity", position = "identity", fill='#2780e3') +
+  ggplot2::geom_text(aes(label = paste0(sprintf("%0.1f", round(count/sum(count)*100,1)),'%'), vjust = -0.10)) +
+  ggthemes::theme_few() + 
+  ggplot2::labs(y = '# of Customers', x = 'Number of Other device orders') + 
+  ggplot2::theme(legend.position='none')
+```
+
+## Shipping order type {.tabset}
+
+### Work orders
+
+6.9% of customers shipped their orders to work.
+
+```{r}
+customers %>% 
+  dplyr::mutate(work_orders_cut = cut(work_orders, 
+                                      breaks = c(seq(-1,10), 750),
+                                      labels = c(seq(0,10), '11+'))) %>%
+  dplyr::group_by(work_orders_cut) %>%
+  dplyr::summarise(count = n()) %>%
+  ggplot2::ggplot(aes(x = work_orders_cut, y = count)) + 
+  ggplot2::geom_bar(stat = "identity", position = "identity", fill='#2780e3') +
+  ggplot2::geom_text(aes(label = paste0(sprintf("%0.1f", round(count/sum(count)*100,1)),'%'), vjust = -0.10)) +
+  ggthemes::theme_few() + 
+  ggplot2::labs(y = '# of Customers', x = 'Number of orders shipped to work') + 
+  ggplot2::theme(legend.position='none')
+```
+
+### Home Orders
+
+37.7% of customers shipped their orders to their home.
+
+```{r}
+customers %>% 
+  dplyr::mutate(home_orders_cut = cut(home_orders, 
+                                      breaks = c(seq(-1,10), 750),
+                                      labels = c(seq(0,10), '11+'))) %>%
+  dplyr::group_by(home_orders_cut) %>%
+  dplyr::summarise(count = n()) %>%
+  ggplot2::ggplot(aes(x = home_orders_cut, y = count)) + 
+  ggplot2::geom_bar(stat = "identity", position = "identity", fill='#2780e3') +
+  ggplot2::geom_text(aes(label = paste0(sprintf("%0.1f", round(count/sum(count)*100,1)),'%'), vjust = -0.10)) +
+  ggthemes::theme_few() + 
+  ggplot2::labs(y = '# of Customers', x = 'Number of orders shipped to home') + 
+  ggplot2::theme(legend.position='none')
+```
+
+### Parcelpoint orders
+
+0.9% of customers opt for a ParcelPoint.
+
+```{r}
+customers %>% 
+  dplyr::mutate(parcelpoint_orders_cut = cut(parcelpoint_orders, 
+                                             breaks = c(seq(-1,10), 750),
+                                             labels = c(seq(0,10), '11+'))) %>%
+  dplyr::group_by(parcelpoint_orders_cut) %>%
+  dplyr::summarise(count = n()) %>%
+  ggplot2::ggplot(aes(x = parcelpoint_orders_cut, y = count)) + 
+  ggplot2::geom_bar(stat = "identity", position = "identity", fill='#2780e3') +
+  ggplot2::geom_text(aes(label = paste0(sprintf("%0.1f", round(count/sum(count)*100,1)),'%'), vjust = -0.10)) +
+  ggthemes::theme_few() + 
+  ggplot2::labs(y = '# of Customers', x = 'Number of orders shipped to a parcelpoint') + 
+  ggplot2::theme(legend.position='none')
+```
+
+### Other collection point orders
+
+78.1% of customers opt for other collection point; the most popular option.
+
+```{r}
+customers %>% 
+  dplyr::mutate(other_collection_orders_cut = cut(other_collection_orders, 
+                                                  breaks = c(seq(-1,10), 750),
+                                                  labels = c(seq(0,10), '11+'))) %>%
+  dplyr::group_by(other_collection_orders_cut) %>%
+  dplyr::summarise(count = n()) %>%
+  ggplot2::ggplot(aes(x = other_collection_orders_cut, y = count)) + 
+  ggplot2::geom_bar(stat = "identity", position = "identity", fill='#2780e3') +
+  ggplot2::geom_text(aes(label = paste0(sprintf("%0.1f", round(count/sum(count)*100,1)),'%'), vjust = -0.10)) +
+  ggthemes::theme_few() + 
+  ggplot2::labs(y = '# of Customers', x = 'Number of orders shipped to other collection points') + 
+  ggplot2::theme(legend.position='none')
+```
+
+## Discount activity {.tabset}
+
+### Redpen discount used **#ignore**
+
+Since this column was not mentioned in the data dictionary on [https://github.com/theiconic/datascientist](https://github.com/theiconic/datascientist) it will be ignored.
+
+
+```{r}
+customers %>%  
+  ggplot2::ggplot(aes(x=redpen_discount_used)) + 
+  ggplot2::geom_histogram(bins=30, fill='#2780e3') + 
+  ggthemes::theme_few() + 
+  ggplot2::labs(y = '# of Customers', x = 'Redpen discount used (description not supplied on GitHub) ')
+```
+
+```{r}
+# Remove redpen_discount_used column from data
+customers <- customers %>%  
+  dplyr::select(-redpen_discount_used)
+```
+
+### Coupon discount applied **#ignore**
+
+Since this column was not mentioned in the data dictionary on [https://github.com/theiconic/datascientist](https://github.com/theiconic/datascientist) it will be ignored.
+
+```{r, warning=FALSE}
+customers %>% 
+  ggplot2::ggplot(aes(x=coupon_discount_applied)) + 
+  ggplot2::geom_histogram(bins=30, fill='#2780e3') + 
+  ggthemes::theme_few() + 
+  ggplot2::labs(y = '# of Customers', x = 'Coupon discount applied (description not provided on GitHub)')
+```
+
+```{r}
+# Remove coupon_discount_applied column from data
+customers <- customers %>%  
+  dplyr::select(-coupon_discount_applied)
+```
+
+### Average discount on offer
+
+Although slightly deceiving from the graph, the majority of customers typically applied a discount when purchasing. 32.7% (15,048/46,030) of customers did not apply a discount.
+
+```{r}
+customers %>% 
+  ggplot2::ggplot(aes(x=average_discount_onoffer)) + 
+  ggplot2::geom_histogram(bins=30, fill='#2780e3') + 
+  ggthemes::theme_few() + 
+  ggplot2::labs(y = '# of Customers', x = 'Average discount rate of items typically purchased (%)')
+```
+
+### Average discount used
+
+Following a similar pattern to average discount on offer, this graph represents the final amount in $ discounted when purchasing.
+
+```{r}
+customers %>% 
+  ggplot2::ggplot(aes(x=average_discount_used)) + 
+  ggplot2::geom_histogram(bins=30, fill='#2780e3') + 
+  ggthemes::theme_few() + 
+  ggplot2::labs(y = '# of Customers', x = 'Average discount finally used on top of existing discount ($)')
+```
+
+## Revenue
+
+In line with the splits below, the highest portion of 35.5% of customers have generated revenue in the range of $101 to $500. 
+
+3.3% recorded no revenue, and the highest revenue from a single customer was $354,700.2.
+
+Please note that the breaks are not even to manage the wide range of values.
+
+
+```{r}
+customers %>% 
+  dplyr::mutate(revenue_cut = cut(revenue, 
+                                      breaks = c(-1, 0, 10, 50, 100, 500, 1000, 10000, 50000, 250000, 500000),
+                                      labels = c("0", "1-10", "11-50", "51-100", "101-500", "500-1,000", "1,001-10,000", "10,001-50,000", "50,001-250,000", "250,001-500,000")
+                                      )) %>%
+  dplyr::group_by(revenue_cut) %>% 
+  dplyr::summarise(count = n()) %>%
+  ggplot2::ggplot(aes(x = revenue_cut, y = count)) + 
+  ggplot2::geom_bar(stat = "identity", position = "identity", fill='#2780e3') +
+  ggplot2::geom_text(aes(label = paste0(sprintf("%0.1f", round(count/sum(count)*100,1)),'%'), vjust = -0.10)) +
+  ggthemes::theme_few() + 
+  ggplot2::labs(y = '# of Customers', x = 'Revenue ($)') + 
+  ggplot2::theme(legend.position='none',
+                 axis.text.x=element_text(angle=45, hjust=1)
+                 ) 
+```
+
+## Data Completeness
+
+How many missing values are there for each feature? The graph below shows how complete each column is (no missing values).
+
+Conveniently, there are no missing values in any of the columns (excluding any removed ones). Hence, we will **not** need to perform any **missing value imputation**.
+
+```{r, warning=FALSE}
+missing_values <- customers %>% 
+  dplyr::summarize_all(funs(sum(!is.na(.))/n())) %>% 
+  tidyr::gather(key="feature", value="complete_pct")
+
+missing_values %>% 
+  ggplot2::ggplot(aes(x=reorder(feature,-complete_pct),y=complete_pct)) +
+  ggplot2::geom_bar(stat="identity",fill="#2780e3")+
+  ggplot2::coord_flip() + ggthemes::theme_few() + ggplot2::labs(x = 'Feature', y = 'Data Completness')
+```
+
+
+# Feature engineering
+
+Create new data object for machine learning input.
+
+```{r}
+ml_customers <- customers
+```
+
+## Correcting corrupt columns
+
+### Days since last order
+
+It is clear this column is corrupted as 'days_since_last_order' must have a lower value than 'days_since_first_order'.
+
+Moreover, if someone has ordered only once, these two columns should have the same value, as the last order will be the same as the first order.
+
+```{r, result='asis', echo=FALSE}
+DT::datatable(head(ml_customers, 10) %>%
+                dplyr::filter(orders == 1) %>%
+                dplyr::select(customer_id, orders, days_since_first_order, days_since_last_order)
+                , style='bootstrap', class='table-condensed', options = list(dom = 'tp',scrollX = TRUE))
+```
+
+For example, take the following:
+
+* customer_id: 668c6aac52ff54d4828ad379cdb38e7d
+* orders: 1
+* days_since_first_order: 2053
+* days_since_last_order: 49272
+
+This customer has only ordered once, so the first order of 2,053 should also be the value of the last order. 
+
+Since the last order is 49,272 and greater than 2053, we can introduce a value x when divided into 49,272 will result in 2,053.
+
+$\frac{49272}{x}=2053$
+
+This equation can be rewritten as:
+
+$x=\frac{49272}{2053}$
+
+$x=24$
+
+When solved, x is 24, which happens to be the amount of hours in 1 day. This means that 'days_since_last_order' is currently in hours as opposed to days. 
+
+We can confirm this by dividing the column by 24.
+
+```{r, result='asis', echo=FALSE}
+DT::datatable(head(ml_customers, 10) %>%
+                dplyr::mutate(days_since_last_order = days_since_last_order/24) %>%
+                dplyr::filter(orders == 1) %>%
+                dplyr::select(customer_id, orders, days_since_first_order, days_since_last_order)
+                , style='bootstrap', class='table-condensed', options = list(dom = 'tp',scrollX = TRUE))
+```
+
+These values now align correctly so this can be rolled out to the whole dataset.
+
+```{r, warning=FALSE}
+ml_customers <- ml_customers %>% 
+  dplyr::mutate(days_since_last_order = days_since_last_order/24)
+```
+
+## New features {.tabset}
+
+Using the existing data, several new features may be engineered.
+
+### Average items per order
+
+The average number of items per order.
+
+```{r}
+ml_customers <- ml_customers %>%
+  dplyr::mutate(average_items_perorder = items/orders)
+```
+
+### Average order revenue
+
+The average revenue generated per order.
+
+```{r}
+ml_customers <- ml_customers %>%
+  dplyr::mutate(average_order_revenue = revenue/orders)
+```
+
+### Average item value
+
+Average item revenue.
+
+```{r}
+ml_customers <- ml_customers %>%
+  dplyr::mutate(average_item_revenue = revenue/items)
+```
+
+### Inactive period
+
+The portion of the days the customer has been inactive
+
+```{r}
+ml_customers <- ml_customers %>%
+  dplyr::mutate(inactive_portion = days_since_last_order/days_since_first_order)
+```
+
+## Convert categorical columns to numeric binary
+
+### Newsletter subscribers
+
+Generally, machine learning algorithms do not take categorical values as input. Fortunately, there is only one categorical column 'is_newsletter_subscriber' with a value of either Y (Yes) or N (No). 
+
+This can be treated into a numeric binary where 1 represents Y and 0 represents N. This is also called **one hot encoding**.
+
+```{r, warning=FALSE}
+ml_customers <- ml_customers %>% 
+  dplyr::mutate(is_newsletter_subscriber = as.numeric(stringr::str_detect(is_newsletter_subscriber, 'Y')))
+```
+
+## Convert count columns into breakdowns {.tabset}
+
+### Items
+
+Here, we will convert all the item count columns into decimal breakdowns of total items for each customer.
+
+```{r, warning=FALSE}
+# Loop through columns that end with _item and calaculate as decimal of total items
+for(item_col in names(ml_customers)[str_detect(names(ml_customers), '_items$')]) {
+  ml_customers[[item_col]] <- ml_customers[[item_col]]/ml_customers[['items']]
+}
+```
+
+### Orders
+
+Similar to items, all columns related to a count of orders will be converted into a decimal breakdown of total orders for each customer.
+
+```{r, warning=FALSE}
+# Loop through columns that end with _item and calaculate as decimal of total orders
+for(order_col in names(ml_customers)[str_detect(names(ml_customers), '_orders$')]) {
+  ml_customers[[order_col]] <- ml_customers[[order_col]]/ml_customers[['orders']]
+}
+```
+
+### Returns
+
+Calculate returns as decimal of total orders.
+
+```{r, warning=FALSE}
+# convert returns as decimal of total orders
+ml_customers <- ml_customers %>%
+  dplyr::mutate(returns = returns/orders)
+```
+
+### Cancels
+
+Calculate cancels as decimal of total orders.
+
+```{r, warning=FALSE}
+# convert returns as decimal of total orders
+ml_customers <- ml_customers %>%
+  dplyr::mutate(cancels = cancels/orders)
+```
+
+## Input normalization
+
+A final step is to get all of the data on the same scale. This ensures feature values implicitly weights all features equally in their representation. 
+
+This has numerous benefits and is best practice as a **data preprocessing** step.
+
+The following formula will be used on each appropriate column to scale the input from 0 to 1:
+
+$X_{normalize} = \frac{X-X_{min}}{X_{max}-X_{min}}$
+
+```{r}
+# List of columns to normalize
+columns_to_normalize <- c('days_since_first_order', 'days_since_last_order', 
+                          'orders', 
+                          'items', 
+                          'shipping_addresses',
+                          'devices',
+                          'vouchers',
+                          'average_discount_onoffer', 'average_discount_used',
+                          'average_items_perorder',
+                          'average_order_revenue', 'average_item_revenue',
+                          'revenue'
+                          )
+
+# Loop over columns to normalize and apply normalization to said column in the ml_customers dataset
+for(col in columns_to_normalize) {
+  to_be_assigned <- taskpackage::normalize_column(ml_customers, col)
+  ml_customers[[col]] <- to_be_assigned
+}
+```
+
+Ensure that all columns in ml_customers are in the range of 0 to 1.
+
+```{r, fig.width=12, fig.height=10, warning=FALSE, message=FALSE}
+reshape2::melt(ml_customers[,-c(1)]) %>%
+  ggplot2::ggplot(aes(x = value)) + 
+  ggplot2::facet_wrap(~variable,scales = "free_x") + 
+  ggplot2::geom_histogram(fill='#2780e3', bins = 10) +
+  ggthemes::theme_few() + 
+  ggplot2::labs(x = 'Scaled value (0 to 1)', y = '# of Customers')
+```
+
+## Machine learning ready dataset{.tabset}
+
+The final dataset ml_customers can now be input into machine learning algorithms.
+
+The columns are categorized as follows:
+
+```{r}
+normalized_columns <- columns_to_normalize
+
+breakdown_columns <- c('cancels', 'returns', 
+                       'female_items', 'male_items', 'unisex_items',
+                       'wapp_items', 'wftw_items', 'mapp_items', 'wacc_items', 'macc_items', 'mftw_items', 'wspt_items', 'mspt_items', 'curvy_items', 'sacc_items',
+                       'msite_orders', 'desktop_orders', 'android_orders', 'ios_orders', 'other_device_orders',
+                       'work_orders', 'home_orders', 'parcelpoint_orders', 'other_collection_orders',
+                       'inactive_portion'
+                       )
+
+binary_columns <- c('is_newsletter_subscriber',
+                    'different_addresses',
+                    'cc_payments', 'paypal_payments', 'afterpay_payments', 'apple_payments'
+                    )
+```
+
+The original dataset customers can now be contrasted to ml_customers below.
+
+### ml_customers
+```{r, result='asis', echo=FALSE}
+DT::datatable(head(ml_customers, 10)
+                , style='bootstrap', class='table-condensed', options = list(dom = 'tp',scrollX = TRUE))
+```
+
+### customers
+```{r, result='asis', echo=FALSE}
+DT::datatable(head(customers, 10)
+                , style='bootstrap', class='table-condensed', options = list(dom = 'tp',scrollX = TRUE))
+```
+
+# Labelling data with clustering
+
+In this section, structure will be added to the unlabelled data by adding a gender flag of M (male) or F (female). The starting point to perform this will be **K-means clustering**.
+
+K-means clustering is a type of unsupervised learning, the aim of K-means clustering is to find groups or segments in the data. Data points are grouped based on **feature similarity**.
+
+In this way, K-means clustering analyzes the data and finds groups **organically** as opposed to being imposed by rules.
+
+## Assessing clustering tendency
+
+Before embarking on any clustering method on the data, it is useful to evaluate whether the data has a **tendancy to cluster**.
+
+A visual approach will be performed to assess this, the data we have has more than 2 features (44 features). And we would like to visualize this on a scatter plot which requires 2 dimensions.
+
+To reduce the **dimensionality** of the data from 44 features to 2 features we will use an algorithm called **principal component analysis**. 
+
+Principal component analysis, just like it sounds like, will find the principal components in the dataset and reduce the dimensionality into something we can visualize with ease on a scatter plot.
+
+To finally evaluate if the data has a tendency to cluster we will compare the components of the ml_customers dataset to the components of a **randomly generated** dataset with the same rows and columns.
+
+As mentioned earlier in the script, the column 'female_items' will be paramount in assessing gender. 
+
+For the visualization, we will cut the values in this column (which range from 0 to 1, where 1 denotes all items were in the female category and 0 denotes there were no female items) to the following groups:
+
+* None (0% female items)
+* Very Low (1% to 25% female items)
+* Low (25% to 50% female items)
+* High (50% to 75% female items)
+* Very High (75% to 100% female items)
+
+Create vector of groups following the above.
+
+```{r}
+female_item_ratio_vector <- cut(ml_customers$female_items,
+                    breaks = c(-1, 0, 0.25, 0.5, 0.75, 1),
+                    labels = c('None', 'Very Low', 'Low', 'High', 'Very High')
+                    )
+                  
+```
+
+## Clustering datasets {.tabset}
+
+Prepare datasets for clustering.
+
+### Create actual dataset
+
+Prepare actual dataset by removing customer_id column.
+
+```{r}
+# Remove customer id
+cluster_df <- ml_customers[, -c(1)]
+```
+
+### Create random dataset
+
+Generate random data.
+
+```{r}
+# Random data generated from the cluster_df dataset
+random_df <- apply(cluster_df, 2,
+                function(x){runif(length(x), min(x), (max(x)))})
+random_df <- as.data.frame(random_df)
+```
+
+## Principal component analysis {.tabset}
+
+The output from principal component analysis.
+
+### PCA of actual data
+
+It can be observed that the data contains some structure as Dim 1 and Dim2 increase the customer has more female items as % of their total items.
+
+```{r}
+# Plot actual cluster data set
+fviz_pca_ind(prcomp(cluster_df), title = "PCA - Actual Customers Dataset",
+                        habillage = female_item_ratio_vector,
+                        palette = "jco",
+                        geom = "point", ggtheme = theme_few(),
+                        legend = "bottom")
+
+```
+
+### PCA of random data
+
+On the other hand, the random data does not contain any structure.
+
+```{r}
+# Plot the random dataset
+factoextra::fviz_pca_ind(prcomp(random_df), title = "PCA - Random Customers Data",
+                                        habillage = sample(rep(c('None', 'Very Low', 'Low', 'High', 'Very High'), length.out = nrow(random_df))),
+                                        geom = "point", ggtheme = theme_classic())
+
+```
+
+## K-means clustering{.tabset}
+
+There are numerous ways to determine the optimal number of clusters such as the **elbow method** or **average silhouette method** which we will not explore here. 
+
+From the prior visualization we can see there is some overlap between clusters and we are aiming to obtain at least get 2 as we would like to segment male and female customers.
+
+Moreover, we also know on a whole that 74.6% of customers order at least 1 female item; so more than 1 cluster will likely be female shoppers.
+
+We will attempt to cluster with **4 centers**.
+
+### K-means on the actual data
+
+K-means has managed to cluster 4 centers successfully.
+
+```{r}
+# Set seed for reproducibility
+set.seed(42)
+
+# K-means on actual dataset
+km_actual <- stats::kmeans(x = cluster_df, 
+                           centers = 4)
+
+
+# Plot the clusters
+factoextra::fviz_cluster(list(data = cluster_df, cluster = km_actual$cluster),
+                         ellipse.type = "norm", geom = "point", stand = FALSE,
+                         palette = "jco", ggtheme = theme_few())
+
+```
+
+### K-means on the random data
+
+On the random data there are no meaningful clusters.
+
+```{r}
+# K-means on the random dataset
+km_random <- stats::kmeans(x = random_df[,(1:3)], 
+                         centers = 4)
+
+factoextra::fviz_cluster(list(data = random_df, cluster = km_random$cluster),
+             ellipse.type = "norm", geom = "point", stand = FALSE,
+             palette = "jco", ggtheme = theme_classic())
+
+```
+
+## K-means results
+
+Conveniently, the output from the k means function has more than just the cluster vector output. It also has cluster means of each input feature.
+
+### Cluster means data
+
+Prepare mean data.frame of each variable for each of the 4 centers.
+
+```{r}
+# Create data.frame from kmeans output
+km_centers <- as.data.frame(km_actual$centers) %>%
+  dplyr::select(female_items,
+                male_items,
+                unisex_items,
+                is_newsletter_subscriber,
+                orders, cancels, returns,
+                inactive_portion,
+                vouchers,
+                devices,
+                revenue
+                ) %>% 
+  data.matrix() %>%
+  round(4)*100 
+```
+
+### Visualise the cluster means
+
+We can visualize these center means of meaningful columns in a heatmap.
+
+```{r, fig.width=12, warning=FALSE, message=FALSE}
+gplots::heatmap.2(x = km_centers,
+        cellnote = km_centers,
+        main = 'Heatmap of Feature Cluster Means',
+        notecol = 'white', 
+        srtCol = 15,
+        Rowv=NA, 
+        Colv=NA, 
+        dendrogram = 'none',
+        trace="none",
+        key = FALSE,
+        col = brewer.pal(9,"Blues")[5:9], 
+        scale="none")
+```
+
+Remarkably, the K-means clustering algorithm has added structure to the data where clusters 1 to 3 have a mean female items % of total items in the range of 83.67% to 91.88% and cluster 1 only has 1.03%.
+
+Further enhanced that the male items % of total items follows a reverse pattern where cluster 4 has 83.57% and clusters 1 to 3 have range of 2.7% to 9.23%.
+
+### Clustering conclusion
+
+In conclusion, we can infer from the K-means output that clusters 1 to 3 are female and cluster 4 are male customers.
+
+Create lookup of cluster output and assign F to clusters 1 to 3 and M to cluster 4.
+
+```{r}
+cluster_lookup <- data.frame(
+  cluster = c(1, 2, 3, 4),
+  gender = c('F', 'F', 'F', 'M')
+)
+```
+
+Bolt on clusters to ml_customers.
+
+```{r}
+ml_customers$cluster <- km_actual$cluster
+```
+
+Left join gender to ml_customers based on cluster_lookup.
+
+```{r}
+ml_customers <- dplyr::left_join(ml_customers, cluster_lookup)
+ml_customers$cluster <- NULL
+```
+
+### Distribution of gender
+
+75.8% of customers in this dataset are female, and the remaining 24.2% are male.
+
+```{r, warning=FALSE}
+ml_customers %>% 
+  dplyr::group_by(gender) %>%
+  dplyr::summarise(count = n()) %>%
+  ggplot2::ggplot(aes(x = gender, y=count, fill=gender)) +
+  ggplot2::geom_bar(stat = "identity", position = "identity") +
+  ggplot2::geom_text(aes(label = paste0(sprintf("%0.1f", round(count/sum(count)*100,1)),'%'), vjust = -0.10)) +
+  ggthemes::theme_few() + 
+  ggplot2::labs(y = '# of Customers', x = 'Gender (F:Female, M:Male)') +
+  ggplot2::theme(legend.position='none')
+```
+
+# Model building
+
+Now that we have added labels to the ml_customers dataset we can proceed with building a deep learning model that can classify whether a customer is male or female.
+
+The h2o deep learning framework will be used to build a deep learning model.
+
+## Preparing the data
+
+A binary column will be created to classify if a customer is male (0) or female (1) called 'female'.
+
+When building any machine learning model, a best practice is to split a dataset into two partitions: a trainset and a testset.
+
+The trainset is used to build the model, the created model is then validated by predicting the label (F) in the test set. The trainset will be built on a 80% sample of ml_customers, and the remaining 30% will form the testset. 
+
+This is done to not **overfit** the model on the data and that it generalizes well on new data.
+
+The predicted label is then compared to the actual label in the test set to assess the model.
+
+```{r}
+# Set seed for reproducibility
+set.seed(100)
+
+# Create binary column for female
+ml_customers$female <- as.numeric(stringr::str_detect(ml_customers$gender, 'F' ))
+
+# Delete gender column
+ml_customers$gender <- NULL
+
+# Delete customer_id column
+ml_customers$customer_id <- NULL
+
+# Create training and test set
+intrain <- caret::createDataPartition(y=ml_customers$female,
+                             p=0.8,
+                             list=FALSE)
+
+# Training set
+trainset = ml_customers[intrain,]
+
+# Test set
+testset = ml_customers[-intrain,]
+
+# Initalize h2o server
+localH2O <- h2o.init(ip = "localhost", port = 54321, startH2O = TRUE
+                     )
+
+## Convert to h2o cloud object
+h2o_trainset <- as.h2o(trainset, "trainset")
+h2o_testset <- as.h2o(testset, "testset")
+```
+
+## Build deep learning model
+
+The code below builds a deep learning model by inputting the features represented by columns 1 to 44 of ml_customers. The y value is the label, in this case the binary classification of 1 or 0 in the female column.
+
+The deep learning model we will build will have the following characteristics:
+
+* 3 layers.
+* 50 nodes for each layer.
+* Rectifier With Dropout activation function.
+
+```{r}
+# Set seed for reproducibility
+set.seed(1234)
+
+## Fit a deep learning model with h2o.
+fit <- h2o.deeplearning(x = 1:44,  # column numbers for predictors
+                   y = 45,   # column number for female label
+                   training_frame = h2o_trainset, # data in H2O format
+                   activation = "RectifierWithDropout", # activation function of choice
+                   input_dropout_ratio = 0.2, # % of inputs dropout
+                   hidden_dropout_ratios = c(0.5,0.5,0.5), # % for nodes dropout
+                   hidden = c(50,50,50), # 4 layers of 60 nodes
+                   variable_importances = TRUE, # Include variable importance
+                   adaptive_rate = TRUE,
+                   epochs = 100)
+```
+
+## Test set prediction
+
+With a trained model stored in fit, we can attempt to predict the labels in the testset.
+
+```{r}
+## Predict the labels of the testset and store the results in 'pred'
+pred <- h2o.predict(fit, h2o_testset)
+
+## Converting H2O format into numeric vector
+pred <- as.numeric(as.list(pred))
+```
+
+# Model results
+
+Up to this point we have built a deep learning model using trainset and predicted the labels of the testset.
+
+Although we have not inspected any of the results directly, there is a rich amount of information stored in the objects we have created so far.
+
+Let us take a closer look.
+
+## Confusion matrix
+
+A confusion matrix is a technique for summarizing the performance of a classification algorithm. It basically gives us a better idea of what our model is getting right and wrong. Furthermore, the type of errors the model is getting: specifically if they are type I or type II errors.
+
+Here is a refresher on type I and type II errors in the context of this task:
+
+* true positive: correctly predicted customer as female.
+* false positive: incorrectly predicted customer was female.
+* true negative: correctly predicted customer as male.
+* false negative: incorrectly predicted customer was male.
+
+```{r}
+# confusionMatrix
+class = ifelse(pred >= .5,1,0)
+
+tb = table(actual = testset$female, predicted = class)
+
+cm.tb <- caret::confusionMatrix(tb, positive = '1')
+
+cm.tb
+```
+
+* Accuracy: the overall accuracy of the model.
+```{r, echo=FALSE}
+cm.tb[[3]][[1]]
+```
+* Sensitivity: Also known as the true positive rate, it measures the
+proportion of positives that are correctly identified as such (how correct the model was at predicting a customer as female).
+```{r, echo=FALSE}
+cm.tb[[4]][[1]]
+```
+* Specificity: Also known as the true negative rate, it measures the proportion of negatives that are correctly identified as such (how correct the model was at predicting a customer was male).
+```{r, echo=FALSE}
+cm.tb[[4]][[2]]
+```
+
+The model built is better at predicting when a customer is female as opposed to male. It is worth noting that there were more female shopper training examples in this dataset.
+
+## Variable importance
+
+What were the 10 most meaningful features when it came to training the model?
+
+```{r}
+# Plot variable importance of fit
+h2o.varimp_plot(model = fit, 
+                num_of_features = 10)
+
+# shutdown h2o
+h2o.shutdown(prompt=FALSE)
+```
+
+Variable importance denotes how important a feature was when predicting as to whether a customer was male or female.
+
+As observed from the graph, the % of the items that belong to a category tend to be the most useful when assessing whether a customer is male or female. 
+
+# Five potential features
+
+Aside from the features provided in the dataset, to increase the accuracy of the model others may be considered. 
+
+These are just assumptions and would need to be validated in a similar fashion to what was applied to the existing features in this dataset.
+
+1. Name: This is a more direct way to classify male or female as there are clear common patterns when considering how girls and boys are named at birth. Unisex names may pose an issue but when compounded with the already available information this might be less of an issue.
+2. Images of Products: This houses a rich amount of information that can be extracted using image classification, on top of more detailed categories, colours may also be a potential avenue for useful insights.
+3. Product sizes: e.g shoe sizes, potential avenue to extrapolate biological differences between males and females.
+4. Time spent on site sections: The amount of time a customer spent on 'Shop Women' or 'Shop Men' on The Iconic website as a % of total time on the site.
+5. Brand: Information on what brands the customer has purchased.
+
+# Executive Summary
+
+**“Close to 90% of a Data Scientist's job is in cleaning data.”**
+
+The above statement certainly rings true when it came to performing the work in this script. A significant portion of the time was spent exploring the data to understand it more intricately to transform it into a state that a machine learning algorithm can pick up (this can also be seen in the amount of ink in the initial sections).
+
+Unfortunately, I was unable to find the second corrupted column, assuming that days_since_last_order was indeed one of the corrupted columns which was reported in hours as opposed to days. However, considering we used a deep learning approach if any features were not adding any meaningful information the 'weights' attached to these features in the neural network would be reduced to nothing and there would be no penalty. Moreover, it is worth noting that if we normalized the days_since_last_order in hours this would the same as normalizing it in days.
+
+Transforming the data was ultimately representing it in a state where it characterized a consumer's history with The Iconic with much more clarity, for example, transforming items to represent a % of total items as opposed to absolute values.
+
+At the most basic level, when considering whether a customer was male or female, the % of items to certain categories in their overall basket was the most useful. The most significant were:
+
+* female_items: % of female items.
+* wsftw_items: % of women footwear items.
+* male_items: % of male items.
+* wapp_items: % of women apparel items.
+* mapp_items: % of male apparel items.
+
+Finally, the model built achieved an overall accuracy of:
+```{r, echo=FALSE}
+cm.tb[[3]][[1]]*100
+```
+
+It correctly identified customers as female this often:
+```{r, echo=FALSE}
+cm.tb[[4]][[1]]*100
+```
+
+It correctly identified customers as male this often:
+```{r, echo=FALSE}
+cm.tb[[4]][[2]]*100
+```
+
+# How to reproduce this document
+
+To reproduce this document run the file contained called '0_admin.R.'
+
+The script depends on a few packages which are worth mentioning here:
+
+**0_admin.r**
+```{r}
+packages <- c('devtools', 'rmarkdown')
+```
+
+This script calls a render function which converts the markdown document 'script.Rmd' to a html file. The file you are currently viewing is the output of this process 'script.html.' This file also has dependencies which will need to be installed to reproduce this document.
+
+**script.Rmd**
+```{r}
+wrangling.packages
+
+plotting.packages
+
+ml.packages
+```
+
+There is also a custom package which is loaded in o_admin.R script called taskpackage which is contained in this repository.
+
+**Thank you!**
+
+
+
+
+
